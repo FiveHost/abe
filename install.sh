@@ -1,7 +1,8 @@
+cat << 'EOF' > install.sh
 #!/usr/bin/env bash
 # ==============================================================================
 #  Anti Ban-Evasion (ABE) by FiveHost
-#  Script de Déploiement Automatisé pour Debian
+#  Script de Déploiement Automatisé - Debian 12 (Bookworm) Compatible
 # ==============================================================================
 
 set -euo pipefail
@@ -20,27 +21,36 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-INSTALL_DIR="/opt/corvus-sentinel"
+# Détection automatique du répertoire courant ou chemin FiveHost par défaut
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$INSTALL_DIR" == "/" ] || [ "$INSTALL_DIR" == "/root" ]; then
+    INSTALL_DIR="/opt/fivehost-abe"
+fi
+
 DATA_DIR="${INSTALL_DIR}/data"
 BACKEND_DIR="${INSTALL_DIR}/backend"
 FRONTEND_DIR="${INSTALL_DIR}/frontend"
 BUILD_DIR="/tmp/abe-build"
 
-echo -e "${GREEN}[1/7] Mise à jour des paquets et dépendances système...${NC}"
+echo -e "${GREEN}[1/7] Installation des dépendances Bookworm sans interruption de service...${NC}"
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-pip python3-venv sqlite3 tcpdump \
-    openjdk-21-jdk maven curl git libpcap-dev
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    python3 python3-pip python3-venv sqlite3 tcpdump \
+    default-jdk maven curl git libpcap-dev
 
-echo -e "${GREEN}[2/7] Création de l'arborescence...${NC}"
-mkdir -p "${DATA_DIR}" "${BACKEND_DIR}" "${FRONTEND_DIR}" "${BUILD_DIR}/src/main/java/fr/fivehost/abe"
+echo -e "${GREEN}[2/7] Préparation des répertoires de travail...${NC}"
+mkdir -p "${DATA_DIR}" "${BACKEND_DIR}" "${FRONTEND_DIR}" "${BUILD_DIR}/src/main/java/fr/fivehost/abe" "${BUILD_DIR}/src/main/resources"
 
 echo -e "${GREEN}[3/7] Configuration de l'environnement virtuel Python...${NC}"
-python3 -m venv "${INSTALL_DIR}/venv"
-"${INSTALL_DIR}/venv/bin/pip" install --upgrade pip
-"${INSTALL_DIR}/venv/bin/pip" install fastapi uvicorn pydantic scapy requests
+if [ ! -d "${INSTALL_DIR}/venv" ]; then
+    python3 -m venv "${INSTALL_DIR}/venv"
+fi
+"${INSTALL_DIR}/venv/bin/pip" install --upgrade pip --quiet
+"${INSTALL_DIR}/venv/bin/pip" install fastapi uvicorn pydantic scapy requests --quiet
 
 echo -e "${GREEN}[4/7] Initialisation de la Base de Données SQLite...${NC}"
-sqlite3 "${DATA_DIR}/sentinel.db" << 'EOF'
+sqlite3 "${DATA_DIR}/sentinel.db" << 'EOFDB'
 CREATE TABLE IF NOT EXISTS monitored_servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -75,12 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_telemetry_user ON telemetry(username);
 CREATE INDEX IF NOT EXISTS idx_telemetry_ip ON telemetry(ip);
 CREATE INDEX IF NOT EXISTS idx_telemetry_port ON telemetry(server_port);
 
--- Port par défaut 25565
 INSERT OR IGNORE INTO monitored_servers (name, port) VALUES ('Serveur Principal', 25565);
-EOF
+EOFDB
 
-echo -e "${GREEN}[5/7] Compilation du plugin Paper / Purpur...${NC}"
-cat << 'EOF' > "${BUILD_DIR}/pom.xml"
+echo -e "${GREEN}[5/7] Compilation du plugin Paper / Purpur (Java 17 / Compatible 21)...${NC}"
+cat << 'EOFPOM' > "${BUILD_DIR}/pom.xml"
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -90,8 +99,8 @@ cat << 'EOF' > "${BUILD_DIR}/pom.xml"
     <version>1.0.0</version>
     <packaging>jar</packaging>
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <repositories>
@@ -109,17 +118,17 @@ cat << 'EOF' > "${BUILD_DIR}/pom.xml"
         </dependency>
     </dependencies>
 </project>
-EOF
+EOFPOM
 
-cat << 'EOF' > "${BUILD_DIR}/src/main/resources/plugin.yml"
+cat << 'EOFPLUGIN' > "${BUILD_DIR}/src/main/resources/plugin.yml"
 name: AntiBanEvasion
 version: 1.0.0
 main: fr.fivehost.abe.AntiBanEvasion
 api-version: '1.20'
 author: FiveHost
-EOF
+EOFPLUGIN
 
-cat << 'EOF' > "${BUILD_DIR}/src/main/java/fr/fivehost/abe/AntiBanEvasion.java"
+cat << 'EOFJAVA' > "${BUILD_DIR}/src/main/java/fr/fivehost/abe/AntiBanEvasion.java"
 package fr.fivehost.abe;
 
 import org.bukkit.Bukkit;
@@ -208,21 +217,21 @@ public class AntiBanEvasion extends JavaPlugin implements Listener {
         });
     }
 }
-EOF
+EOFJAVA
 
-cat << 'EOF' > "${BUILD_DIR}/src/main/resources/config.yml"
-# Adresse de l'API ABE (passerelle docker par defaut : 172.18.0.1 ou 172.17.0.1)
+cat << 'EOFCONF' > "${BUILD_DIR}/src/main/resources/config.yml"
+# Passerelle par défaut pour conteneurs Pterodactyl/Docker
 api-url: "http://172.18.0.1:8000/api/plugin"
-EOF
+EOFCONF
 
 cd "${BUILD_DIR}"
 mvn clean package -q
 cp "${BUILD_DIR}/target/AntiBanEvasion-1.0.0.jar" "${INSTALL_DIR}/AntiBanEvasion.jar"
+cd "${INSTALL_DIR}"
 
-echo -e "${GREEN}[6/7] Configuration des démons système systemd...${NC}"
+echo -e "${GREEN}[6/7] Configuration des services isolés systemd...${NC}"
 
-# Service API
-cat << EOF > /etc/systemd/system/sentinel-api.service
+cat << EOFAPI > /etc/systemd/system/sentinel-api.service
 [Unit]
 Description=FiveHost ABE FastAPI Web & Forensics Engine
 After=network.target
@@ -237,10 +246,9 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOFAPI
 
-# Service Sniffer
-cat << EOF > /etc/systemd/system/sentinel-sniffer.service
+cat << EOFSNIFF > /etc/systemd/system/sentinel-sniffer.service
 [Unit]
 Description=FiveHost ABE Passive TCP & Mod Channels Sniffer
 After=network.target
@@ -255,15 +263,16 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOFSNIFF
 
 systemctl daemon-reload
 systemctl enable sentinel-api sentinel-sniffer
 systemctl restart sentinel-api sentinel-sniffer
 
-echo -e "${GREEN}[7/7] Déploiement terminé avec succès !${NC}"
+echo -e "${GREEN}[7/7] Déploiement terminé sans perturbation !${NC}"
 echo -e "${BLUE}====================================================${NC}"
 echo -e "Dashboard accessible sur : ${GREEN}http://$(curl -s https://api.ipify.org):8000${NC}"
-echo -e "Binaire du plugin disponible : ${GREEN}${INSTALL_DIR}/AntiBanEvasion.jar${NC}"
-echo -e "Téléchargement direct du plugin : ${GREEN}http://$(curl -s https://api.ipify.org):8000/api/download/plugin${NC}"
+echo -e "Plugin .JAR prêt dans : ${GREEN}${INSTALL_DIR}/AntiBanEvasion.jar${NC}"
 echo -e "${BLUE}====================================================${NC}"
+EOF
+chmod +x install.sh
